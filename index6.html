@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bio-Maze 3D: Kinetic Escape</title>
+    <style>
+        :root {
+            --blood-red: #ff0000;
+            --deep-red: #4d0000;
+            --neon-gold: #ffd700;
+            --interface-blue: rgba(0, 100, 255, 0.2);
+        }
+
+        body {
+            margin: 0; background: #000; color: white;
+            font-family: 'Orbitron', "Microsoft JhengHei", sans-serif;
+            overflow: hidden;
+        }
+
+        /* 3D 畫布 */
+        #render-canvas {
+            width: 100vw; height: 100vh; display: block;
+        }
+
+        /* HUD 狀態列 */
+        #hud {
+            position: absolute; top: 0; width: 100%; display: flex;
+            justify-content: space-between; padding: 20px; box-sizing: border-box;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8), transparent);
+            pointer-events: none;
+        }
+
+        .stat { font-size: 1.2em; text-shadow: 0 0 10px var(--blood-red); }
+        .val { color: var(--neon-gold); font-weight: bold; font-size: 1.5em; }
+
+        /* 題目顯示區 */
+        #question-overlay {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -120%);
+            width: 85%; max-width: 700px; text-align: center;
+            background: var(--interface-blue); border: 1px solid rgba(0, 150, 255, 0.5);
+            padding: 25px; border-radius: 15px; backdrop-filter: blur(8px);
+            box-shadow: 0 0 30px rgba(0, 100, 255, 0.3);
+            transition: opacity 0.5s;
+        }
+
+        .q-text { font-size: 1.3em; line-height: 1.6; margin-bottom: 20px; }
+
+        /* 岔路選擇按鈕 */
+        #choice-grid {
+            position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 20px; width: 90%; justify-content: center;
+        }
+
+        .path-btn {
+            background: rgba(0,0,0,0.8); border: 2px solid var(--neon-gold);
+            color: white; padding: 15px 25px; cursor: pointer; border-radius: 8px;
+            font-size: 1.1em; transition: all 0.3s; flex: 1; max-width: 200px;
+        }
+        .path-btn:hover { background: var(--neon-gold); color: black; transform: translateY(-5px); }
+        .path-btn:active { transform: scale(0.95); }
+
+        /* 撞牆濾鏡 */
+        #crash-filter {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: red; opacity: 0; pointer-events: none; z-index: 50;
+        }
+
+        @keyframes crash-flash {
+            0% { opacity: 0.7; }
+            100% { opacity: 0; }
+        }
+
+        /* 啟動選單 */
+        #start-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; z-index: 100; display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+        }
+    </style>
+</head>
+<body>
+
+<div id="start-screen">
+    <h1 style="color:var(--blood-red); font-size: 4em; letter-spacing: 10px;">BIO-RUNNER</h1>
+    <p style="color: #666;">第一人稱・動態逃生・知識導向</p>
+    <button onclick="initGame()" style="margin-top:40px; padding:20px 60px; font-size:1.5em; background:none; border:2px solid var(--blood-red); color:white; cursor:pointer;">啟動同步程序</button>
+</div>
+
+<div id="crash-filter"></div>
+
+<div id="hud">
+    <div class="stat">VITALITY: <span id="hp" class="val">100</span></div>
+    <div class="stat">PROGRESS: <span id="progress" class="val">0/20</span></div>
+</div>
+
+<canvas id="render-canvas"></canvas>
+
+<div id="question-overlay">
+    <div id="q-content" class="q-text">系統掃描中...</div>
+</div>
+
+<div id="choice-grid"></div>
+
+<script>
+    // --- 完整 100 題題庫 ---
+    const rawQuestions = [
+        // 急救與症狀 (1-20)
+        { q: "突然感到頭暈、冒冷汗、手抖，最可能的原因？", a: ["低血糖", "高血壓", "脫水"], correct: 0 },
+        { q: "發生中暑時，第一時間該做什麼？", a: ["大量喝冰水", "移至陰涼處並鬆開衣物", "立刻吃退燒藥"], correct: 1 },
+        { q: "若有人失去意識且無呼吸，應施作？", a: ["哈姆立克", "人工呼吸", "CPR與AED"], correct: 2 },
+        { q: "異物梗塞無法發聲時，採取？", a: ["哈姆立克法", "大量拍背", "催吐"], correct: 0 },
+        { q: "燒燙傷處理的第一步？", a: ["塗抹牙膏", "沖冷水 20 分鐘", "冰敷"], correct: 1 },
+        { q: "流鼻血時頭部姿勢？", a: ["向後仰", "稍微前傾", "平躺"], correct: 1 },
+        { q: "嚴重出血時優先採取？", a: ["直接壓迫止血", "抹止血粉", "沖水"], correct: 0 },
+        { q: "懷疑骨折首要原則？", a: ["推回原位", "固定傷處減少移動", "揉捏"], correct: 1 },
+        { q: "FAST口訣中的 F 代表？", a: ["臉部歪斜(Face)", "發燒", "昏倒"], correct: 0 },
+        { q: "過敏性休克不包含哪種徵兆？", a: ["呼吸困難", "血壓下降", "食慾大增"], correct: 2 },
+        { q: "心肌梗塞典型痛感？", a: ["刺痛", "胸口壓迫感", "腹痛"], correct: 1 },
+        { q: "RICE原則中的 I 是？", a: ["運動", "冰敷(Ice)", "碘酒"], correct: 1 },
+        { q: "毒蛇咬傷錯誤處理？", a: ["用嘴吸毒", "保持冷靜", "記住蛇特徵"], correct: 0 },
+        { q: "癲癇發作時何者正確？", a: ["塞入異物", "保護頭部", "按住肢體"], correct: 1 },
+        { q: "溺水救起後應防範？", a: ["二次溺水", "胃出血", "感冒"], correct: 0 },
+        { q: "蜂螫留針如何處理？", a: ["手擠", "信用卡刮除", "直接拔"], correct: 1 },
+        { q: "氣喘發作優先使用？", a: ["運動", "擴張噴霧", "喝水"], correct: 1 },
+        { q: "一氧化碳中毒特徵？", a: ["皮膚發紫", "櫻桃紅唇", "咳嗽"], correct: 1 },
+        { q: "貓狗咬傷擔心的疾病？", a: ["破傷風", "狂犬病", "敗血症"], correct: 1 },
+        { q: "快暈倒時應？", a: ["蹲下或平躺", "快走", "仰頭"], correct: 0 },
+        // 營養飲食 (21-40)
+        { q: "每日鈉攝取上限？", a: ["2400mg", "5000mg", "1000mg"], correct: 0 },
+        { q: "心血管危害最大的脂肪？", a: ["飽和", "反式脂肪", "不飽和"], correct: 1 },
+        { q: "預防骨質疏鬆補充？", a: ["鈣與維D", "維C", "鐵"], correct: 0 },
+        { q: "深綠蔬菜富含？", a: ["維A與葉酸", "維B12", "維D"], correct: 0 },
+        { q: "優質蛋白質來源？", a: ["培根", "毛豆/雞蛋", "薯條"], correct: 1 },
+        { q: "運動中主要補充？", a: ["纖維", "電解質飲品", "咖啡"], correct: 1 },
+        { q: "地中海飲食核心油？", a: ["橄欖油", "豬油", "棕櫚油"], correct: 0 },
+        { q: "維生素C主要來源？", a: ["五穀", "肉", "蔬果"], correct: 2 },
+        { q: "幫助鐵質吸收？", a: ["茶", "維生素C", "牛奶"], correct: 1 },
+        { q: "高GI食物？", a: ["糙米", "白吐司", "燕麥"], correct: 1 },
+        { q: "天天五蔬果是？", a: ["三蔬兩果", "五種果", "五盤菜"], correct: 0 },
+        { q: "紅酒抗氧化成分？", a: ["白藜蘆醇", "咖啡因", "胡蘿蔔素"], correct: 0 },
+        { q: "缺維A易導致？", a: ["壞血病", "夜盲症", "腳氣病"], correct: 1 },
+        { q: "曬太陽可產生維？", a: ["維D", "維E", "維K"], correct: 0 },
+        { q: "人體主能量來源？", a: ["蛋白", "碳水化合物", "礦物質"], correct: 1 },
+        { q: "非全穀雜糧類？", a: ["玉米", "白麵條", "地瓜"], correct: 1 },
+        { q: "素食者易缺？", a: ["維C", "維B12", "維A"], correct: 1 },
+        { q: "精緻糖過多導致？", a: ["齲齒肥胖", "近視", "過敏"], correct: 0 },
+        { q: "抽筋相關礦物質？", a: ["鐵", "鉀與鎂", "鋅"], correct: 1 },
+        { q: "喝奶後腹瀉？", a: ["乳糖不耐", "牛奶中毒", "消化不良"], correct: 0 },
+        // 生理常識 (41-60)
+        { q: "人類正常體溫範圍？", a: ["35.5-36℃", "36.5-37.5℃", "38-39℃"], correct: 1 },
+        { q: "靜止心跳率範圍？", a: ["60-100次", "120次", "40次"], correct: 0 },
+        { q: "飲水量計算公式？", a: ["體重x30cc", "體重x10", "4公升"], correct: 0 },
+        { q: "正常血壓應低於？", a: ["120/80", "140/90", "160/100"], correct: 0 },
+        { q: "人體最大器官？", a: ["肺", "肝", "皮膚"], correct: 2 },
+        { q: "紅血球功能？", a: ["免疫", "運氧", "凝血"], correct: 1 },
+        { q: "胰島素分泌器官？", a: ["胃", "胰臟", "膽囊"], correct: 1 },
+        { q: "熬夜傷害代謝功能？", a: ["肝與大腦", "肌肉", "大腸"], correct: 0 },
+        { q: "近視聚焦在視網膜？", a: ["前方", "後方", "上方"], correct: 0 },
+        { q: "骨骼總數約？", a: ["106塊", "206塊", "306塊"], correct: 1 },
+        { q: "全能捐血血型？", a: ["A", "B", "O型"], correct: 2 },
+        { q: "胃酸主要成分？", a: ["硫酸", "鹽酸", "醋酸"], correct: 1 },
+        { q: "疫苗主要作用？", a: ["治療", "產生抗體", "增肌"], correct: 1 },
+        { q: "抗生素治療哪種感染？", a: ["病毒", "細菌", "過敏"], correct: 1 },
+        { q: "建議睡眠時間？", a: ["4-5小時", "7-9小時", "12小時"], correct: 1 },
+        { q: "藍光影響？", a: ["食慾", "睡眠品質", "聽力"], correct: 1 },
+        { q: "洗手正確步驟？", a: ["濕搓沖捧擦", "濕沖擦", "沖脫泡蓋"], correct: 0 },
+        { q: "預防蛀牙成分？", a: ["氟", "木醣醇", "薄荷"], correct: 0 },
+        { q: "抽菸增加何種癌風險？", a: ["肺癌", "胃癌", "皮癌"], correct: 0 },
+        { q: "PM2.5 指的是直徑？", a: ["重金屬", "懸浮微粒", "氣體"], correct: 1 },
+        // 運動復健 (61-80)
+        { q: "有氧運動建議時間？", a: ["10秒", "20-30分", "5小時"], correct: 1 },
+        { q: "重訓肌肉痠痛原因？", a: ["撕裂修補", "骨折", "脂肪"], correct: 0 },
+        { q: "最大心跳公式？", a: ["220-年齡", "100+年齡", "180"], correct: 0 },
+        { q: "伸展拉伸最佳時機？", a: ["起床", "運動後", "飯前"], correct: 1 },
+        { q: "深蹲鍛鍊？", a: ["背肌", "下肢肌群", "胸肌"], correct: 1 },
+        { q: "健走手部應？", a: ["插袋", "自然擺動", "舉高"], correct: 1 },
+        { q: "暖身目的？", a: ["美觀", "預防受傷", "消耗脂肪"], correct: 1 },
+        { q: "核心肌不包括？", a: ["腹", "背", "手指"], correct: 2 },
+        { q: "中強度運動感覺？", a: ["能唱歌", "微喘能說話", "無法呼吸"], correct: 1 },
+        { q: "收操有助於？", a: ["緩解乳酸", "長肌", "變矮"], correct: 0 },
+        { q: "慢跑屬於？", a: ["有氧", "無氧", "伸展"], correct: 0 },
+        { q: "久坐不包含哪種危害？", a: ["心血管病", "視力變強", "代謝病"], correct: 1 },
+        { q: "游泳適合肥胖者？", a: ["涼快", "浮力減壓", "有氧氣"], correct: 1 },
+        { q: "仰臥起坐訓練？", a: ["腹肌", "小腿", "脖子"], correct: 0 },
+        { q: "側腹痛應？", a: ["快跑", "放慢呼吸", "坐下"], correct: 1 },
+        { q: "肌肉密度比脂肪？", a: ["輕", "重", "一樣"], correct: 1 },
+        { q: "重訓提升？", a: ["基礎代謝", "身高", "聽力"], correct: 0 },
+        { q: "平衡訓練預防？", a: ["跌倒", "嬰兒受傷", "職業傷"], correct: 0 },
+        { q: "膝蓋受傷避免？", a: ["深蹲", "睡覺", "吃飯"], correct: 0 },
+        { q: "運動後補肌肉？", a: ["碳水蛋白質", "糖水", "酒精"], correct: 0 },
+        // 心理與壓力 (81-100)
+        { q: "長期壓力分泌？", a: ["生長", "皮質醇", "褪黑素"], correct: 1 },
+        { q: "正念核心？", a: ["過去", "專注當下", "未來"], correct: 1 },
+        { q: "憤怒做法？", a: ["回擊", "深呼吸數到十", "壓抑"], correct: 1 },
+        { q: "社交支持影響？", a: ["沒差", "紓壓長壽", "變老"], correct: 1 },
+        { q: "憂鬱症差別？", a: ["時間與功能", "流淚", "吃藥"], correct: 0 },
+        { q: "適度壓力稱？", a: ["惡性", "良性", "無效"], correct: 1 },
+        { q: "睡前避免？", a: ["讀書", "發光電子品", "音樂"], correct: 1 },
+        { q: "生理回饋控制？", a: ["身高", "自主神經", "指甲"], correct: 1 },
+        { q: "復原力是？", a: ["忘記", "逆境恢復", "力氣"], correct: 1 },
+        { q: "社交孤立風險？", a: ["失智", "近視", "蛀牙"], correct: 0 },
+        { q: "笑不包含？", a: ["多巴胺", "降壓", "增肺活量"], correct: 2 },
+        { q: "心理紓壓運動？", a: ["瑜伽", "憋氣", "熬夜"], correct: 0 },
+        { q: "心理諮商對象？", a: ["瘋子", "任何人", "有錢人"], correct: 1 },
+        { q: "寫日記益處？", a: ["打字", "覺察宣洩", "消耗熱量"], correct: 1 },
+        { q: "同理心是？", a: ["同意觀點", "感受情緒", "金錢"], correct: 1 },
+        { q: "深呼吸強調？", a: ["胸呼吸", "呼氣長於吸氣", "憋氣"], correct: 1 },
+        { q: "燃盡發生在？", a: ["睡飽", "過勞高壓", "看電視"], correct: 1 },
+        { q: "焦慮反應？", a: ["放鬆", "心跳加速手汗", "嗜睡"], correct: 1 },
+        { q: "肯定特質？", a: ["自戀", "自尊", "自大"], correct: 1 },
+        { q: "親友過世歷程？", a: ["叛逆", "哀悼歷程", "更年期"], correct: 1 }
+    ];
+
+    // --- 遊戲引擎設定 ---
+    let state = {
+        hp: 100, step: 0, goal: 20, active: false,
+        cameraZ: 0, targetZ: 0, 
+        currentQ: null, isMoving: false,
+        angle: 0, targetAngle: 0
+    };
+
+    const canvas = document.getElementById('render-canvas');
+    const ctx = canvas.getContext('2d');
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function initGame() {
+        document.getElementById('start-screen').style.display = 'none';
+        state.active = true;
+        animate();
+        nextQuestion();
+    }
+
+    // --- 3D 繪製邏輯 ---
+    function animate() {
+        if (!state.active) return;
+
+        // 平滑插值相機
+        state.cameraZ += (state.targetZ - state.cameraZ) * 0.05;
+        state.angle += (state.targetAngle - state.angle) * 0.1;
+
+        const w = canvas.width, h = canvas.height;
+        ctx.fillStyle = '#050000';
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.save();
+        ctx.translate(w / 2, h / 2);
+        ctx.rotate(state.angle);
+
+        // 繪製隧道線條
+        for (let i = 20; i > 0; i--) {
+            let z = (i * 200) - (state.cameraZ % 200);
+            let size = 150000 / z;
+            let alpha = 1 - (z / 4000);
+            
+            ctx.strokeStyle = `rgba(0, 150, 255, ${alpha})`;
+            ctx.lineWidth = 2;
+            
+            // 繪製矩形隧道牆
+            ctx.strokeRect(-size/2, -size/2, size, size);
+            
+            // 連接線 (路徑感)
+            ctx.beginPath();
+            ctx.moveTo(-size/2, -size/2); ctx.lineTo(-size*0.8, -size*0.8);
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        requestAnimationFrame(animate);
+    }
+
+    function nextQuestion() {
+        if (!state.active) return;
+        state.isMoving = false;
+        
+        const q = rawQuestions[Math.floor(Math.random() * rawQuestions.length)];
+        state.currentQ = q;
+
+        document.getElementById('q-content').innerText = q.q;
+        const grid = document.getElementById('choice-grid');
+        grid.innerHTML = '';
+
+        const directions = ["左轉", "直行", "右轉"];
+        q.a.forEach((ans, i) => {
+            const btn = document.createElement('button');
+            btn.className = 'path-btn';
+            btn.innerText = `${directions[i]}：${ans}`;
+            btn.onclick = () => makeChoice(i);
+            grid.appendChild(btn);
+        });
+    }
+
+    function makeChoice(idx) {
+        if (state.isMoving) return;
+        state.isMoving = true;
+
+        if (idx === state.currentQ.correct) {
+            // 答對：前進
+            state.targetZ += 600;
+            state.step++;
+            updateUI();
+            
+            if (state.step >= state.goal) {
+                setTimeout(() => endGame(true), 1500);
+            } else {
+                setTimeout(nextQuestion, 1500);
+            }
+        } else {
+            // 答錯：撞牆轉彎
+            state.hp -= 20;
+            state.targetAngle = (idx === 0) ? 0.5 : (idx === 2) ? -0.5 : 0.1; // 模擬轉向錯誤方向
+            
+            setTimeout(() => {
+                triggerCrash();
+                state.targetAngle = 0; // 彈回正面
+                updateUI();
+                if (state.hp <= 0) {
+                    endGame(false);
+                } else {
+                    nextQuestion();
+                }
+            }, 600);
+        }
+    }
+
+    function triggerCrash() {
+        const filter = document.getElementById('crash-filter');
+        filter.style.animation = 'none';
+        filter.offsetHeight; // reflow
+        filter.style.animation = 'crash-flash 0.8s forwards';
+        
+        // 提示正確答案
+        const hudMsg = document.createElement('div');
+        hudMsg.style.cssText = "position:absolute; top:40%; left:50%; transform:translate(-50%,-50%); color:white; font-size:2em; text-shadow:0 0 10px red;";
+        hudMsg.innerText = "❌ 撞擊！正確答案：" + state.currentQ.a[state.currentQ.correct];
+        document.body.appendChild(hudMsg);
+        setTimeout(() => hudMsg.remove(), 2000);
+    }
+
+    function updateUI() {
+        document.getElementById('hp').innerText = state.hp;
+        document.getElementById('progress').innerText = `${state.step}/${state.goal}`;
+    }
+
+    function endGame(win) {
+        state.active = false;
+        const screen = document.getElementById('start-screen');
+        screen.style.display = 'flex';
+        screen.innerHTML = win ? 
+            `<h1 style="color:var(--neon-gold)">逃生成功</h1><p>系統狀態：健康</p><button onclick="location.reload()">再試一次</button>` :
+            `<h1 style="color:var(--blood-red)">致命損壞</h1><p>正確解答是逃生的唯一路徑。</p><button onclick="location.reload()">重新啟動</button>`;
+    }
+</script>
+
+</body>
+</html>
